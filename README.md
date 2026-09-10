@@ -44,11 +44,12 @@ bb plugin config threadline set position Bottom
 
 ## UI components
 
-`components/ui/` is vendored source you own (the shadcn model): edit freely.
-Add more from the BB registry (`npx shadcn add @bb/select …`). React and
-BB-shimmed packages (the radix portal primitives — including
-`@radix-ui/react-hover-card`, used here — and the SDK) are provided by BB at
-runtime and never bundled; they stay in `devDependencies` so imports typecheck.
+This plugin keeps only what it uses: `lib/utils.ts` (the `cn` helper) and the
+`@radix-ui/react-hover-card` primitive for the popover. React, the radix portal
+primitives, and the SDK are provided by BB at runtime and never bundled, so they
+stay in `devDependencies` only to typecheck. To vendor more shadcn components,
+`components.json` still points at the BB registry — `npx shadcn add @bb/select …`
+recreates `components/ui/` on demand.
 
 ## Install
 

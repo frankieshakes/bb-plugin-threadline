@@ -18,13 +18,11 @@
       ]
     },
     "noEmit": true,
-    "skipLibCheck": false
+    "skipLibCheck": true
   },
   "include": [
     "server.ts",
     "app.tsx",
-    "components",
-    "lib",
-    "hooks"
+    "lib"
   ]
 }
