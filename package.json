@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-threadline",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "engines": {
     "bb": ">=0.42",
@@ -10,7 +10,7 @@
     "name": "Threadline",
     "description": "A minimap of your prompts — jump to any point in a conversation.",
     "branding": {
-      "icon": "Menu"
+      "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx",
