@@ -9,6 +9,8 @@ scroll.
 _Inspired by [Conductor](https://conductor.build), where I first encountered
 this feature._
 
+![Threadline — the prompt rail and its hover popover in a thread](docs/threadline.png)
+
 - `server.ts` — the backend: one RPC, `outline`, that returns the current
   thread's conversation outline (`bb.sdk.threads.conversationOutline`) as the
   ordered user/assistant messages, each with a short preview.
