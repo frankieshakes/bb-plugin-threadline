@@ -6,6 +6,9 @@ preview text; click a marker (or a preview) to jump the conversation to the
 start of that prompt and flash it. The current prompt stays highlighted as you
 scroll.
 
+_Inspired by [Conductor](https://conductor.build), where I first encountered
+this feature._
+
 - `server.ts` — the backend: one RPC, `outline`, that returns the current
   thread's conversation outline (`bb.sdk.threads.conversationOutline`) as the
   ordered user/assistant messages, each with a short preview.
