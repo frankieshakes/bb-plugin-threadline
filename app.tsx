@@ -259,6 +259,17 @@ const EMPTY_OUTLINE: Outline = {
   prompts: [],
 };
 
+// BB injects synthetic messages into a thread as role "user" (e.g. cross-thread
+// completion pings), each prefixed with this marker.
+const BB_SYSTEM_PREFIX = "[bb system]";
+
+// They're real timeline rows — kept in ordinalOf/total so scroll math stays
+// accurate — but they aren't the human's prompts, so they don't belong on the
+// navigator's ticks or popover.
+function isUserPrompt(item: OutlineItem): boolean {
+  return item.role === "user" && !item.preview.startsWith(BB_SYSTEM_PREFIX);
+}
+
 function useOutline(threadId: string | null): Outline {
   const rpc = useRpc<typeof rpcContract>();
   const [outline, setOutline] = useState<Outline>(EMPTY_OUTLINE);
@@ -274,7 +285,7 @@ function useOutline(threadId: string | null): Outline {
       setOutline({
         ordinalOf,
         total: result.items.length,
-        prompts: result.items.filter((item) => item.role === "user"),
+        prompts: result.items.filter(isUserPrompt),
       });
     }, () => undefined);
   }, [rpc, threadId]);
@@ -515,8 +526,8 @@ function Navigator() {
           align="center"
           sideOffset={8}
           collisionPadding={12}
-          style={{ maxHeight: POPOVER_MAX_HEIGHT }}
-          className="z-50 flex w-[22rem] flex-col overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-md"
+          style={{ maxHeight: POPOVER_MAX_HEIGHT, width: "22rem" }}
+          className="z-50 flex flex-col overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-md"
         >
           <div className="sticky top-0 z-10 border-b border-border bg-popover px-3 py-2 text-xs font-medium text-muted-foreground">
             Your prompts
@@ -530,8 +541,12 @@ function Navigator() {
                 type="button"
                 onClick={() => go(prompt.id)}
                 className={cn(
-                  "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground",
-                  isActive && "bg-accent text-accent-foreground",
+                  // Selected uses the stronger token (bg-muted); hover uses the
+                  // lighter bg-accent so the two states stay visually distinct.
+                  "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                  isActive
+                    ? "bg-muted text-foreground"
+                    : "hover:bg-accent hover:text-accent-foreground",
                 )}
               >
                 <span className="mt-px w-5 shrink-0 text-xs tabular-nums text-muted-foreground">
