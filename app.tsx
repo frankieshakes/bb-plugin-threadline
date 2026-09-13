@@ -58,6 +58,17 @@ function findScrollElement(): HTMLElement | null {
   return null;
 }
 
+// An ancestor counts as part of the composer's bottom-anchored cluster only if
+// its bottom edge is flush with the composer's. The cluster wrappers are
+// pixel-flush in CSS (`space-y-2` spaces *between* children, never below the
+// last), so this only absorbs sub-pixel getBoundingClientRect rounding — keep
+// it tight: a looser value would let a genuinely taller container with its own
+// bottom spacing pass as "flush" and pull the clamp too low.
+const CLUSTER_FLUSH_PX = 1.5;
+// Stop the climb once an ancestor reaches (near) the pane's top: that's the
+// full-height timeline/scroll region behind the composer, not the cluster.
+const CLUSTER_PANE_TOP_PX = 4;
+
 /**
  * Climb from the composer to the top of the whole bottom-anchored cluster it
  * belongs to. Fixed banners (uncommitted-changes / merge-base, etc.) are
@@ -67,16 +78,14 @@ function findScrollElement(): HTMLElement | null {
  * bottom and hasn't grown into the full-height timeline container.
  */
 function clusterTop(composer: HTMLElement, paneRect: DOMRect): number {
-  const bottom = composer.getBoundingClientRect().bottom;
-  let top = composer.getBoundingClientRect().top;
+  const rect0 = composer.getBoundingClientRect();
+  const bottom = rect0.bottom;
+  let top = rect0.top;
   let node: HTMLElement | null = composer.parentElement;
   while (node !== null && node !== document.body) {
     const rect = node.getBoundingClientRect();
-    // Reached a container that spans up to (near) the pane's top — that's the
-    // timeline/scroll region behind the composer, not the composer cluster.
-    if (rect.top <= paneRect.top + 4) break;
-    // Only follow ancestors still anchored to the composer's bottom edge.
-    if (Math.abs(rect.bottom - bottom) > 8) break;
+    if (rect.top <= paneRect.top + CLUSTER_PANE_TOP_PX) break;
+    if (Math.abs(rect.bottom - bottom) > CLUSTER_FLUSH_PX) break;
     top = Math.min(top, rect.top);
     node = node.parentElement;
   }
