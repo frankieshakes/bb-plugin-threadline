@@ -59,15 +59,42 @@ function findScrollElement(): HTMLElement | null {
 }
 
 /**
- * Top edge (viewport px) of the chat composer in the same pane as the timeline.
- * The timeline scroll element extends *behind* the composer, so "bottom" must
- * clamp to this, not to the scroll element's bottom. Null if none is found.
+ * Climb from the composer to the top of the whole bottom-anchored cluster it
+ * belongs to. Fixed banners (uncommitted-changes / merge-base, etc.) are
+ * stacked *above* the composer inside a shared wrapper that shares the
+ * composer's bottom edge, so "bottom" must clamp above them, not just above the
+ * composer. We ascend while each ancestor stays flush with the composer's
+ * bottom and hasn't grown into the full-height timeline container.
+ */
+function clusterTop(composer: HTMLElement, paneRect: DOMRect): number {
+  const bottom = composer.getBoundingClientRect().bottom;
+  let top = composer.getBoundingClientRect().top;
+  let node: HTMLElement | null = composer.parentElement;
+  while (node !== null && node !== document.body) {
+    const rect = node.getBoundingClientRect();
+    // Reached a container that spans up to (near) the pane's top — that's the
+    // timeline/scroll region behind the composer, not the composer cluster.
+    if (rect.top <= paneRect.top + 4) break;
+    // Only follow ancestors still anchored to the composer's bottom edge.
+    if (Math.abs(rect.bottom - bottom) > 8) break;
+    top = Math.min(top, rect.top);
+    node = node.parentElement;
+  }
+  return top;
+}
+
+/**
+ * Top edge (viewport px) of the chat composer cluster in the same pane as the
+ * timeline — including any fixed banners stacked above the composer. The
+ * timeline scroll element extends *behind* this cluster, so "bottom" must clamp
+ * to its top, not to the scroll element's bottom. Null if none is found.
  */
 function findComposerTop(paneRect: DOMRect): number | null {
   const composers = document.querySelectorAll<HTMLElement>(
     "[data-promptbox], [data-app-composer], [data-follow-up-composer]",
   );
-  let bottomMost: DOMRect | null = null;
+  let bottomMost: HTMLElement | null = null;
+  let bottomMostBottom = -Infinity;
   for (const el of Array.from(composers)) {
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) continue;
@@ -75,9 +102,12 @@ function findComposerTop(paneRect: DOMRect): number | null {
     const overlap =
       Math.min(rect.right, paneRect.right) - Math.max(rect.left, paneRect.left);
     if (overlap < rect.width * 0.5) continue;
-    if (bottomMost === null || rect.bottom > bottomMost.bottom) bottomMost = rect;
+    if (rect.bottom > bottomMostBottom) {
+      bottomMost = el;
+      bottomMostBottom = rect.bottom;
+    }
   }
-  return bottomMost === null ? null : bottomMost.top;
+  return bottomMost === null ? null : clusterTop(bottomMost, paneRect);
 }
 
 /** Content-space top of a row (px from the top of the scrolled content). */
@@ -364,12 +394,16 @@ function usePaneAnchor(position: Position, revision: string): PaneAnchor | null 
       observer.observe(document.body);
       // The composer floats over the timeline, so its expand/collapse does not
       // resize the scroll element — observe it directly so "bottom" re-anchors.
+      // Also observe its wrapper: a banner toggling above the composer changes
+      // the wrapper's height (and the composer's position) without resizing the
+      // composer itself, so watching only the composer would miss it.
       for (const composer of Array.from(
         document.querySelectorAll<HTMLElement>(
           "[data-promptbox], [data-app-composer], [data-follow-up-composer]",
         ),
       )) {
         observer.observe(composer);
+        if (composer.parentElement !== null) observer.observe(composer.parentElement);
       }
     }
     window.addEventListener("resize", recompute);
