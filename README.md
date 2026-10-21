@@ -1,8 +1,8 @@
 # bb-plugin-threadline
 
 A prompt navigator for long threads. Threadline puts a slim rail on the right
-edge of a conversation, one marker per prompt you sent. Hover the rail to preview
-any prompt. Click a marker or a preview to jump to that prompt and flash it. The
+edge of a conversation, one tick per prompt you sent. Hover the rail to preview
+any prompt. Click a tick or a preview to jump to that prompt and flash it. The
 current prompt stays highlighted as you scroll.
 
 Inspired by [Conductor](https://conductor.build), where I first saw this feature.
@@ -22,26 +22,72 @@ Inspired by [Conductor](https://conductor.build), where I first saw this feature
 
 The BB timeline is virtualized, so an off-screen prompt is not in the DOM. Each
 row carries `data-timeline-row-id`, which equals the outline item id for user
-messages. To reach an off-screen prompt, the overlay estimates a scroll position
-from the prompt's ordinal, lets the virtualizer render nearby rows, interpolates
-from their measured offsets until the target row mounts, then centers it with a
-brief highlight.
+messages. Long threads are also paged: only the newest events are loaded, and
+an older page loads when you scroll near the top.
+
+To reach an off-screen prompt, the overlay interpolates (or extrapolates) from
+the rendered rows' measured offsets until the target row mounts, then centers
+it with a brief highlight. Only if that runs into the top with the target still
+older than everything rendered does it page in history: it parks at the top and
+waits for pages to arrive (the content grows, or BB shows "Loading older
+messages…") until the oldest rendered prompt is at or before the target. After
+paging it holds the target in view briefly, since a page still in flight can
+finish and BB's anchor restore would drag the view away. The target tick pulses
+meanwhile; reaching the first prompt of a ~17k-event thread takes ~6s.
+
+BB's timeline sticks to the bottom and only releases on real wheel / touch /
+key input, so a bare programmatic scroll gets snapped back on the next resize.
+Before each scroll the overlay dispatches a non-bubbling synthetic wheel on the
+scroller to release it. Scrolling or typing yourself cancels a jump in flight.
 
 The active prompt is whichever user row sits nearest the top of the viewport,
 recomputed as you scroll. The rail is anchored to the conversation pane, not the
 app window, and re-anchors when the pane resizes (for example when the right
 panel opens).
 
+## Long threads
+
+The rail never grows past half the pane's visible height. As prompts pile up
+the ticks pack tighter; once they can't fit, the rail shows a window of prompts
+that follows the current one, with `+N` counts (clickable) for what's hidden
+above and below. Scroll the wheel over the rail to slide the window.
+
+The popover opens on the current prompt, shows `current / total`, and adds a
+filter box past 15 prompts (Enter jumps to the first match). With
+`scrollToHover` on, hovering a tick scrolls the popover to its row: lined up
+with the tick while the rail shows every prompt, centered once it's windowed,
+and paused while filtering.
+
+Previous / next prompt: `Ctrl+Alt+↑` / `Ctrl+Alt+↓` by default, or the command
+palette's "Threadline: Previous prompt" / "Threadline: Next prompt".
+
 ## Configure
 
-One setting, `position`, places the rail: `Top`, `Middle` (default), or `Bottom`
-(just above the chat input). The frontend reads it with `useSettings()`, so
-changes apply without a reload.
+The frontend reads settings with `useSettings()`, so changes apply without a
+reload.
+
+- `position`: where the rail sits: `Top`, `Middle` (default), or `Bottom` (just
+  above the chat input).
+- `hideBuiltInToc`: hide BB's built-in thread table of contents (default on).
+  BB has no switch for it, so Threadline hides `[data-thread-toc]` with a
+  stylesheet it removes when turned off or unloaded.
+- `scrollToHover`: sync the popover to the hovered tick (default on). Off opens
+  it centered on the current prompt.
 
 ```
 bb plugin config threadline
 bb plugin config threadline set position Bottom
 ```
+
+### Keyboard shortcuts
+
+Previous / next prompt shortcuts are set in Threadline's settings page under
+**Keyboard shortcuts**: click one, press the keys (Esc cancels, Backspace turns
+it off), or Reset to the default. BB's keybinding settings only cover its own
+commands, so Threadline records, stores (plugin KV storage, not `bb.settings`,
+which would also render a free-text field), and matches them itself
+(`lib/shortcut.ts`). The server broadcasts each change so every open window
+picks it up.
 
 ## UI components
 
