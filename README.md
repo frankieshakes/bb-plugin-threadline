@@ -25,11 +25,14 @@ row carries `data-timeline-row-id`, which equals the outline item id for user
 messages. Long threads are also paged: only the newest events are loaded, and
 an older page loads when you scroll near the top.
 
-To reach a prompt older than anything rendered, the overlay parks the timeline
-at the top and waits for pages to arrive (the content grows) until the oldest
-rendered prompt is at or before the target. It then interpolates, or
-extrapolates, from the rendered rows' measured offsets until the target row
-mounts, and centers it with a brief highlight. The target tick pulses
+To reach an off-screen prompt, the overlay interpolates (or extrapolates) from
+the rendered rows' measured offsets until the target row mounts, then centers
+it with a brief highlight. Only if that runs into the top with the target still
+older than everything rendered does it page in history: it parks at the top and
+waits for pages to arrive (the content grows, or BB shows "Loading older
+messages…") until the oldest rendered prompt is at or before the target. After
+paging it holds the target in view briefly, since a page still in flight can
+finish and BB's anchor restore would drag the view away. The target tick pulses
 meanwhile; reaching the first prompt of a ~17k-event thread takes ~6s.
 
 BB's timeline sticks to the bottom and only releases on real wheel / touch /

@@ -7,8 +7,6 @@ export interface Shortcut {
   alt: boolean;
   shift: boolean;
   meta: boolean;
-  /** Cmd on macOS, Ctrl elsewhere. */
-  mod: boolean;
   /** A physical key: "a"–"z", "0"–"9", punctuation, " ", or a named key ("ArrowUp", "F5"). */
   key: string;
 }
@@ -35,7 +33,6 @@ const MODIFIERS: Record<string, keyof Omit<Shortcut, "key">> = {
   command: "meta",
   meta: "meta",
   super: "meta",
-  mod: "mod",
 };
 
 const KEY_ALIASES: Record<string, string> = {
@@ -88,7 +85,6 @@ export function parseShortcut(text: string): Shortcut | null {
     alt: false,
     shift: false,
     meta: false,
-    mod: false,
     key: "",
   };
   for (const [index, part] of parts.entries()) {
@@ -112,7 +108,6 @@ export function parseShortcut(text: string): Shortcut | null {
 /** Canonical text form, the inverse of parseShortcut: "Ctrl+Alt+ArrowUp". */
 export function serializeShortcut(shortcut: Shortcut): string {
   const mods = [
-    shortcut.mod && "Mod",
     shortcut.ctrl && "Ctrl",
     shortcut.alt && "Alt",
     shortcut.shift && "Shift",
@@ -132,16 +127,10 @@ function keyFromEvent(event: KeyboardEvent): string {
   return PUNCTUATION_CODES[event.code] ?? event.key;
 }
 
-export function matchesShortcut(
-  event: KeyboardEvent,
-  shortcut: Shortcut,
-  isMac: boolean,
-): boolean {
-  const ctrl = shortcut.ctrl || (shortcut.mod && !isMac);
-  const meta = shortcut.meta || (shortcut.mod && isMac);
+export function matchesShortcut(event: KeyboardEvent, shortcut: Shortcut): boolean {
   if (
-    event.ctrlKey !== ctrl ||
-    event.metaKey !== meta ||
+    event.ctrlKey !== shortcut.ctrl ||
+    event.metaKey !== shortcut.meta ||
     event.altKey !== shortcut.alt ||
     event.shiftKey !== shortcut.shift
   ) {
@@ -168,6 +157,8 @@ export function recordShortcut(event: KeyboardEvent): RecordResult {
     isFunctionKey ||
     Object.values(KEY_ALIASES).includes(key);
   if (!known) return { kind: "invalid", reason: `${key} can't be used in a shortcut.` };
+  // "+" is the separator in the stored text form, so it can't round-trip.
+  if (key === "+") return { kind: "invalid", reason: "The + key can't be used in a shortcut." };
   if (!event.ctrlKey && !event.altKey && !event.metaKey && !isFunctionKey) {
     return { kind: "invalid", reason: "Include Ctrl, Alt, or Cmd." };
   }
@@ -178,7 +169,6 @@ export function recordShortcut(event: KeyboardEvent): RecordResult {
       alt: event.altKey,
       shift: event.shiftKey,
       meta: event.metaKey,
-      mod: false,
       key,
     },
   };
@@ -197,11 +187,14 @@ export function formatShortcut(shortcut: Shortcut, isMac: boolean): string {
   const key =
     MAC_GLYPHS[shortcut.key] ??
     (shortcut.key.length === 1 ? shortcut.key.toUpperCase() : shortcut.key);
-  const ctrl = shortcut.ctrl || (shortcut.mod && !isMac);
-  const meta = shortcut.meta || (shortcut.mod && isMac);
   if (isMac) {
-    return `${ctrl ? "⌃" : ""}${shortcut.alt ? "⌥" : ""}${shortcut.shift ? "⇧" : ""}${meta ? "⌘" : ""}${key}`;
+    return `${shortcut.ctrl ? "⌃" : ""}${shortcut.alt ? "⌥" : ""}${shortcut.shift ? "⇧" : ""}${shortcut.meta ? "⌘" : ""}${key}`;
   }
-  const mods = [ctrl && "Ctrl", shortcut.alt && "Alt", shortcut.shift && "Shift", meta && "Meta"];
+  const mods = [
+    shortcut.ctrl && "Ctrl",
+    shortcut.alt && "Alt",
+    shortcut.shift && "Shift",
+    shortcut.meta && "Meta",
+  ];
   return [...mods.filter(Boolean), key].join("+");
 }

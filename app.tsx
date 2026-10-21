@@ -179,11 +179,11 @@ function scrollTimelineTo(scrollEl: HTMLElement, top: number): void {
   scrollEl.scrollTop = top;
 }
 
-function landOn(el: HTMLElement): void {
+function landOn(el: HTMLElement, withFlash = true): void {
   const scrollEl = findScrollElement();
   if (scrollEl !== null) claimScroll(scrollEl);
   el.scrollIntoView({ block: "center" });
-  flash(el);
+  if (withFlash) flash(el);
 }
 
 /**
@@ -247,7 +247,14 @@ const MAX_OLDER_PAGES = 200;
 // BOUNCE_FRAMES while waiting, step this far down and back up to re-trigger.
 const BOUNCE_FRAMES = 24;
 const BOUNCE_PX = 2400;
+// A page that's still loading past OLDER_PAGE_TIMEOUT_MS shows BB's "Loading
+// older messages…" status; keep waiting this much longer for it.
+const SLOW_PAGE_TIMEOUT_MS = 25000;
+const LOADING_OLDER_PATTERN = /loading older messages/i;
 const SEEK_ATTEMPTS = 40;
+// After landing, an older page that was already loading can still finish and
+// BB's anchor restore then drags the view off the target. Hold it for this long.
+const SETTLE_MS = 1200;
 
 /** Run `tick` every frame until `done()` holds; false on timeout or abort. */
 async function waitUntil(
@@ -278,6 +285,12 @@ function clickLoadOlderButton(scrollEl: HTMLElement): void {
     ?.click();
 }
 
+function isLoadingOlder(scrollEl: HTMLElement): boolean {
+  return Array.from(scrollEl.querySelectorAll('[role="status"]')).some((el) =>
+    LOADING_OLDER_PATTERN.test(el.textContent ?? ""),
+  );
+}
+
 /**
  * Page older events in until the target prompt is loaded: park at the top,
  * and while the oldest rendered prompt is still newer than the target, wait
@@ -290,6 +303,8 @@ async function loadThrough(
   ordinalOf: Map<string, number>,
   signal: AbortSignal,
 ): Promise<boolean> {
+  // One timeout is allowed to be a hiccup, not the end of history.
+  let retried = false;
   for (let page = 0; page < MAX_OLDER_PAGES; page += 1) {
     scrollTimelineTo(scrollEl, 0);
     await raf();
@@ -300,9 +315,10 @@ async function loadThrough(
     const oldest = bracketRealized(scrollEl, ordinalOf, targetOrdinal).minOrdinal;
     if (oldest !== undefined && oldest <= targetOrdinal) return true;
     const height = scrollEl.scrollHeight;
+    const arrived = () => scrollEl.scrollHeight > height + 1;
     let ticks = 0;
-    const grew = await waitUntil(
-      () => scrollEl.scrollHeight > height + 1,
+    let grew = await waitUntil(
+      arrived,
       OLDER_PAGE_TIMEOUT_MS,
       signal,
       () => {
@@ -317,22 +333,30 @@ async function loadThrough(
         }
       },
     );
+    // Slow, not finished: BB is still showing its loading status.
+    if (!grew && !signal.aborted && isLoadingOlder(scrollEl)) {
+      grew = await waitUntil(arrived, SLOW_PAGE_TIMEOUT_MS, signal);
+    }
     if (signal.aborted) return false;
-    if (!grew) return true; // nothing older to load
+    if (!grew) {
+      if (retried) return true; // nothing older to load
+      retried = true;
+    }
   }
   return true;
 }
 
 /**
- * Scroll the timeline to a message and flash it. `ordinalOf` maps every outline
- * id to its position in the full outline (used to steer the virtualizer).
- * Aborting `signal` (the user scrolled or typed) stops steering.
+ * Scroll the timeline to a message and flash it; true once it lands.
+ * `ordinalOf` maps every outline id to its position in the full outline (used
+ * to steer the virtualizer). Aborting `signal` (the user took over, a newer
+ * jump, a thread switch) stops steering.
  */
 async function navigateToRow(
   id: string,
   ordinalOf: Map<string, number>,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<boolean> {
   const selector = rowSelectorFor(id);
   const landIfRendered = (): boolean => {
     const el = document.querySelector<HTMLElement>(selector);
@@ -340,28 +364,47 @@ async function navigateToRow(
     landOn(el);
     return true;
   };
-  if (landIfRendered()) return;
-
   const scrollEl = findScrollElement();
-  if (scrollEl === null) return;
+  if (scrollEl === null) {
+    // Non-windowed / unexpected layout: best effort if it happens to exist.
+    return landIfRendered();
+  }
 
   const targetOrdinal = ordinalOf.get(id) ?? 0;
   const maxTop = () => Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
   const clampTop = (value: number) => Math.max(0, Math.min(maxTop(), value));
 
-  // Older than everything rendered: make sure it's loaded first.
-  const rendered = bracketRealized(scrollEl, ordinalOf, targetOrdinal);
-  if (rendered.minOrdinal === undefined || targetOrdinal < rendered.minOrdinal) {
-    if (!(await loadThrough(targetOrdinal, scrollEl, ordinalOf, signal))) return;
-  }
+  // Hold the landed row in view while late page loads settle — only needed if
+  // we paged in history or BB is still loading some.
+  let pagedIn = false;
+  const settle = async (): Promise<boolean> => {
+    if (!pagedIn && !isLoadingOlder(scrollEl)) return true;
+    await waitUntil(() => false, SETTLE_MS, signal, () => {
+      const el = document.querySelector<HTMLElement>(selector);
+      if (el === null || !isRealized(el)) return;
+      const view = scrollEl.getBoundingClientRect();
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom < view.top || rect.top > view.bottom) landOn(el, false);
+    });
+    return !signal.aborted;
+  };
 
   // Seek: interpolate between rendered rows that bracket the target, else
   // extrapolate from the rendered rows' spacing — secant steps that converge
-  // in a few frames even across tens of thousands of px.
+  // in a few frames even across tens of thousands of px. Only when that runs
+  // into the top with the target still older than everything rendered do we
+  // page in history: parking at the top kicks off a load, and one that
+  // finishes after landing drags the view away.
   for (let attempt = 0; attempt < SEEK_ATTEMPTS; attempt += 1) {
-    if (signal.aborted) return;
-    if (landIfRendered()) return;
+    if (signal.aborted) return false;
+    if (landIfRendered()) return settle();
     const info = bracketRealized(scrollEl, ordinalOf, targetOrdinal);
+    const olderThanRendered = info.minOrdinal === undefined || targetOrdinal < info.minOrdinal;
+    if (olderThanRendered && scrollEl.scrollTop <= 1) {
+      pagedIn = true;
+      if (!(await loadThrough(targetOrdinal, scrollEl, ordinalOf, signal))) return false;
+      continue;
+    }
     let estTop: number | null = null;
     if (info.below !== undefined && info.above !== undefined) {
       const span = info.above.ordinal - info.below.ordinal;
@@ -380,7 +423,7 @@ async function navigateToRow(
       const from = targetOrdinal < info.first.ordinal ? info.first : info.last;
       estTop = from.top + (targetOrdinal - from.ordinal) * pxPerOrdinal;
     }
-    const step = targetOrdinal < (info.minOrdinal ?? 0) ? -0.85 : 0.85;
+    const step = olderThanRendered ? -0.85 : 0.85;
     scrollTimelineTo(
       scrollEl,
       estTop !== null
@@ -390,7 +433,7 @@ async function navigateToRow(
     await raf();
     await raf();
   }
-  if (!signal.aborted) landIfRendered();
+  return !signal.aborted && landIfRendered() && settle();
 }
 
 // Within this many px of the end, the timeline counts as scrolled to the bottom.
@@ -458,24 +501,31 @@ function useOutline(threadId: string | null): Outline {
   const rpc = useRpc<typeof rpcContract>();
   const [outline, setOutline] = useState<Outline>(EMPTY_OUTLINE);
 
-  const refetch = useCallback(() => {
-    if (threadId === null) {
-      setOutline(EMPTY_OUTLINE);
-      return;
-    }
-    rpc.call("outline", { threadId }).then((result) => {
-      const ordinalOf = new Map<string, number>();
-      result.items.forEach((item, index) => ordinalOf.set(item.id, index));
-      setOutline({
-        ordinalOf,
-        prompts: result.items.filter(isUserPrompt),
-      });
-    }, () => undefined);
-  }, [rpc, threadId]);
-
   useEffect(() => {
     setOutline(EMPTY_OUTLINE);
     if (threadId === null) return;
+    // Responses can land out of order: a slow read for the previous thread, or
+    // overlapping polls on a big one. Apply only while this thread is current,
+    // and never an older request's over a newer one's.
+    let cancelled = false;
+    let issued = 0;
+    let applied = 0;
+    let appliedKey = "";
+    const refetch = () => {
+      const request = ++issued;
+      rpc.call("outline", { threadId }).then((result) => {
+        if (cancelled || request < applied) return;
+        applied = request;
+        // Polls mostly return the same outline; keep its identity so memoized
+        // callbacks and listeners don't churn every few seconds.
+        const key = result.items.map((item) => `${item.id}\u0000${item.preview}`).join("\u0001");
+        if (key === appliedKey) return;
+        appliedKey = key;
+        const ordinalOf = new Map<string, number>();
+        result.items.forEach((item, index) => ordinalOf.set(item.id, index));
+        setOutline({ ordinalOf, prompts: result.items.filter(isUserPrompt) });
+      }, () => undefined);
+    };
     refetch();
     // The timeline streams; poll so newly asked prompts appear. Cheap
     // loopback read. Also refetch when the window regains focus.
@@ -483,10 +533,11 @@ function useOutline(threadId: string | null): Outline {
     const onFocus = () => refetch();
     window.addEventListener("focus", onFocus);
     return () => {
+      cancelled = true;
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [threadId, refetch]);
+  }, [rpc, threadId]);
 
   return outline;
 }
@@ -607,6 +658,9 @@ function isShortcuts(value: unknown): value is Shortcuts {
   return typeof record.previous === "string" && typeof record.next === "string";
 }
 
+const SHORTCUT_FETCH_ATTEMPTS = 3;
+const SHORTCUT_RETRY_MS = 3000;
+
 /**
  * The user's shortcuts (canonical text; "" = disabled), null until loaded.
  * Kept live across windows by the server's realtime broadcast, and refetched
@@ -619,19 +673,47 @@ function useShortcuts(): {
   const rpc = useRpc<typeof rpcContract>();
   const [shortcuts, setShortcuts] = useState<Shortcuts | null>(null);
   const connection = useRealtimeConnectionState();
+  // Bumped by every broadcast or save, so a fetch that was already in flight
+  // can't overwrite the newer value when it lands.
+  const versionRef = useRef(0);
 
+  // Fetch on mount and on every connection change (a reconnect may have missed
+  // a broadcast). Not gated on "connected": RPC doesn't need the realtime
+  // socket, and a socket stuck connecting must not leave shortcuts dead.
   useEffect(() => {
-    if (connection !== "connected") return;
-    rpc.call("shortcuts", {}).then(setShortcuts, () => undefined);
+    let cancelled = false;
+    let retry = 0;
+    const load = (attempt: number) => {
+      const version = versionRef.current;
+      rpc.call("shortcuts", {}).then(
+        (next) => {
+          if (!cancelled && versionRef.current === version) setShortcuts(next);
+        },
+        () => {
+          if (!cancelled && attempt < SHORTCUT_FETCH_ATTEMPTS) {
+            retry = window.setTimeout(() => load(attempt + 1), SHORTCUT_RETRY_MS);
+          }
+        },
+      );
+    };
+    load(1);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retry);
+    };
   }, [rpc, connection]);
 
   useRealtime(SHORTCUTS_CHANNEL, (payload) => {
-    if (isShortcuts(payload)) setShortcuts(payload);
+    if (!isShortcuts(payload)) return;
+    versionRef.current += 1;
+    setShortcuts(payload);
   });
 
   const save = useCallback(
     async (action: ShortcutAction, value: string | null) => {
-      setShortcuts(await rpc.call("setShortcut", { action, value }));
+      const next = await rpc.call("setShortcut", { action, value });
+      versionRef.current += 1;
+      setShortcuts(next);
     },
     [rpc],
   );
@@ -808,6 +890,19 @@ function EdgeCount({
 const POPOVER_SELECTOR = "[data-threadline-popover]";
 const MODIFIER_KEYS = new Set(["Control", "Alt", "Shift", "Meta"]);
 
+/**
+ * Whether an input event means the user is taking over the timeline, which
+ * cancels a jump in flight and releases the clicked prompt's pin. Scrolling or
+ * typing inside the popover (its list, its filter) doesn't count, and neither
+ * does a bare modifier press — that's usually the start of the next shortcut,
+ * and releasing the pin there would make "next" re-land on the same prompt.
+ */
+function isUserTakeover(event: Event): boolean {
+  if (event.target instanceof Element && event.target.closest(POPOVER_SELECTOR)) return false;
+  if (event instanceof KeyboardEvent && MODIFIER_KEYS.has(event.key)) return false;
+  return true;
+}
+
 // The popover scrolls at whichever comes first: this many prompt rows, 70vh, or
 // the space Radix actually has on screen. Beyond the row cap the next row peeks
 // under the fold as a scroll affordance.
@@ -858,50 +953,68 @@ function Navigator() {
   // The pinned click wins over scroll-based detection until the user scrolls.
   const activeId = pinnedId ?? scrollActiveId;
   const anchor = usePaneAnchor(position, `${threadId ?? ""}:${prompts.length}`);
-  const jumpingRef = useRef(false);
+  // The jump in flight, if any. A newer jump retargets it; a thread switch or
+  // unmount cancels it, so it never steers a timeline that isn't ours.
+  const jumpRef = useRef<AbortController | null>(null);
   // Paging in an old prompt can take seconds; the target tick pulses meanwhile.
   const [jumpingId, setJumpingId] = useState<string | null>(null);
 
   const go = useCallback(
     (id: string) => {
-      if (jumpingRef.current) return;
-      jumpingRef.current = true;
+      jumpRef.current?.abort();
+      const controller = new AbortController();
+      jumpRef.current = controller;
       setJumpingId(id);
       // Navigation centers the row, but scroll-based detection uses a near-top
       // line and would resolve to the previous prompt — so mark the clicked
       // prompt active optimistically until the next manual scroll.
       setPinnedId(id);
-      // Paging in an old prompt can take a few seconds; any manual scroll or
-      // key press hands control back instead of fighting the user.
-      const controller = new AbortController();
+      // Any manual scroll or key press hands control back instead of
+      // fighting the user.
       const abort = (event: Event) => {
-        // Scrolling the popover list or pressing a modifier (on its way to a
-        // shortcut) isn't taking over the timeline.
-        if (event.target instanceof Element && event.target.closest(POPOVER_SELECTOR)) return;
-        if (event instanceof KeyboardEvent && MODIFIER_KEYS.has(event.key)) return;
-        controller.abort();
+        if (isUserTakeover(event)) controller.abort();
       };
       window.addEventListener("wheel", abort, { passive: true });
       window.addEventListener("touchmove", abort, { passive: true });
       window.addEventListener("keydown", abort);
-      navigateToRow(id, ordinalOf, controller.signal).finally(() => {
-        jumpingRef.current = false;
-        setJumpingId(null);
-        window.removeEventListener("wheel", abort);
-        window.removeEventListener("touchmove", abort);
-        window.removeEventListener("keydown", abort);
-      });
+      navigateToRow(id, ordinalOf, controller.signal)
+        .catch(() => false)
+        .then((landed) => {
+          // Never reached it (and not cancelled): don't leave the highlight on
+          // a prompt we never showed.
+          if (!landed && !controller.signal.aborted) {
+            setPinnedId((pinned) => (pinned === id ? null : pinned));
+          }
+        })
+        .finally(() => {
+          window.removeEventListener("wheel", abort);
+          window.removeEventListener("touchmove", abort);
+          window.removeEventListener("keydown", abort);
+          if (jumpRef.current === controller) {
+            jumpRef.current = null;
+            setJumpingId(null);
+          }
+        });
     },
     [ordinalOf],
   );
 
-  // A pin from another thread must not suppress detection here.
-  useEffect(() => setPinnedId(null), [threadId]);
+  // A pin or jump from another thread must not carry over to this one.
+  useEffect(() => {
+    setPinnedId(null);
+    return () => {
+      jumpRef.current?.abort();
+      jumpRef.current = null;
+      setJumpingId(null);
+    };
+  }, [threadId]);
 
   // Release the optimistic pin once the user scrolls or navigates by hand.
   useEffect(() => {
     if (pinnedId === null) return;
-    const release = () => setPinnedId(null);
+    const release = (event: Event) => {
+      if (isUserTakeover(event)) setPinnedId(null);
+    };
     window.addEventListener("wheel", release, { passive: true });
     window.addEventListener("touchmove", release, { passive: true });
     window.addEventListener("keydown", release);
@@ -935,19 +1048,20 @@ function Navigator() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (recordingShortcut) return;
       let delta = 0;
-      if (previousShortcut !== null && matchesShortcut(event, previousShortcut, IS_MAC)) {
+      if (previousShortcut !== null && matchesShortcut(event, previousShortcut)) {
         delta = -1;
-      } else if (nextShortcut !== null && matchesShortcut(event, nextShortcut, IS_MAC)) {
+      } else if (nextShortcut !== null && matchesShortcut(event, nextShortcut)) {
         delta = 1;
       }
-      if (delta === 0) return;
+      // Off a thread (or on an empty one) the keys aren't ours: let them through.
+      if (delta === 0 || prompts.length === 0) return;
       event.preventDefault();
       event.stopPropagation();
       step(delta);
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [previousShortcut, nextShortcut, step]);
+  }, [previousShortcut, nextShortcut, step, prompts.length]);
 
   useEffect(() => {
     const onStep = (event: Event) => step((event as CustomEvent<number>).detail);
@@ -995,6 +1109,13 @@ function Navigator() {
   const hoverNonce = hover?.nonce;
   const activeIndexRef = useRef(activeIndex);
   activeIndexRef.current = activeIndex;
+
+  // The filter can unmount while focused (the thread drops to 15 prompts or
+  // fewer, or empties), and then never fires blur — which would pin the
+  // popover open.
+  useEffect(() => {
+    if (!withFilter) setFilterFocused(false);
+  }, [withFilter]);
 
   useEffect(() => {
     if (open) return;
@@ -1091,9 +1212,12 @@ function Navigator() {
                   title={prompt.preview}
                   aria-label={`Prompt ${index + 1}: ${prompt.preview}`}
                   onClick={() => go(prompt.id)}
-                  onMouseEnter={() =>
-                    setHover((prev) => ({ index, nonce: (prev?.nonce ?? 0) + 1 }))
-                  }
+                  onMouseEnter={() => {
+                    // With hover sync off, a recorded hover would only stop
+                    // the popover from opening on the active prompt.
+                    if (!followHover) return;
+                    setHover((prev) => ({ index, nonce: (prev?.nonce ?? 0) + 1 }));
+                  }}
                   className="group flex w-full items-center justify-end"
                   style={{ height: layout.pitch }}
                 >

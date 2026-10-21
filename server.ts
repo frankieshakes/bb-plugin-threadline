@@ -113,8 +113,12 @@ export default async function plugin(bb: BbPluginApi) {
         const parsed = parseShortcut(value);
         stored[action] = parsed === null ? "" : serializeShortcut(parsed);
       }
-      await bb.storage.kv.set(SHORTCUTS_KEY, stored);
       const next = effectiveShortcuts(stored);
+      // The recorder refuses duplicates too; this backstops other windows.
+      if (next.previous !== "" && next.previous === next.next) {
+        throw new Error("Previous and next prompt can't share a shortcut.");
+      }
+      await bb.storage.kv.set(SHORTCUTS_KEY, stored);
       bb.realtime.publish(SHORTCUTS_CHANNEL, next);
       return next;
     },
