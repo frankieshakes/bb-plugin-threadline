@@ -109,8 +109,14 @@ registry, so `npx shadcn add @bb/select` can vendor more components on demand.
 From the published release:
 
 ```
-bb plugin install "git:https://github.com/frankieshakes/bb-plugin-threadline.git@semver:^0.2.0"
+bb plugin install "git:https://github.com/frankieshakes/bb-plugin-threadline.git@semver:0.x"
 ```
+
+`0.x` tracks every 0.* release, so `bb plugin outdated` / `bb plugin update`
+pick up new minor versions. Avoid a caret range here: below 1.0, `^0.2.0`
+means `<0.3.0`, so 0.3.0 would never show as an update. BB fixes the range at
+install time; to change it, `bb plugin remove threadline` and install again
+(this resets Threadline's settings and shortcuts).
 
 From source:
 
