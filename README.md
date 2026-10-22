@@ -11,12 +11,18 @@ Inspired by [Conductor](https://conductor.build), where I first saw this feature
 
 ## Files
 
-- `server.ts`: one RPC, `outline`, returning the thread's conversation outline
-  from `bb.sdk.threads.conversationOutline` (ordered messages, each with a
-  preview).
+- `server.ts`: the settings, plus three RPCs. `outline` returns the thread's
+  conversation outline from `bb.sdk.threads.conversationOutline` (ordered
+  messages, each with a preview). `shortcuts` and `setShortcut` read and write
+  the previous / next prompt shortcuts in plugin KV storage, broadcasting each
+  change over realtime.
 - `app.tsx`: an app-wide overlay (`app.slots.experimental_appOverlay`) that reads
-  the active thread with `useBbContext()`, draws the rail, and scrolls the
-  timeline.
+  the active thread with `useBbContext()`, draws the rail and popover, and
+  scrolls the timeline. It also registers the **Keyboard shortcuts** settings
+  section and the command palette actions.
+- `lib/shortcut.ts`: shortcut parsing, recording, matching, and display, shared
+  by the server (validation) and the app.
+- `CONTEXT.md`: the glossary (rail, tick, popover, windowed rail, and so on).
 
 ## How navigation works
 
@@ -41,7 +47,8 @@ Before each scroll the overlay dispatches a non-bubbling synthetic wheel on the
 scroller to release it. Scrolling or typing yourself cancels a jump in flight.
 
 The active prompt is whichever user row sits nearest the top of the viewport,
-recomputed as you scroll. The rail is anchored to the conversation pane, not the
+recomputed as you scroll. Scrolled to the bottom, the newest visible prompt
+wins instead, so a just-sent prompt is highlighted right away. The rail is anchored to the conversation pane, not the
 app window, and re-anchors when the pane resizes (for example when the right
 panel opens).
 
@@ -98,6 +105,14 @@ and the SDK come from BB at runtime and are never bundled, so they stay in
 registry, so `npx shadcn add @bb/select` can vendor more components on demand.
 
 ## Install
+
+From the published release:
+
+```
+bb plugin install "git:https://github.com/frankieshakes/bb-plugin-threadline.git@semver:^0.2.0"
+```
+
+From source:
 
 ```
 npm install
